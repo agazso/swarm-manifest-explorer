@@ -46,6 +46,7 @@
   let done = $state(false)
   let loadingBatch = $state(false)
   let listError = $state('')
+  let sizes = $state<Record<string, number>>({})
 
   let sentinel: HTMLDivElement | undefined = $state()
   let observer = $state<IntersectionObserver | null>(null)
@@ -88,6 +89,7 @@
       cursor = s.openListing(p)
       options = cursor.options
       entries = []
+      sizes = {}
       done = false
       listError = ''
       loadingBatch = false
@@ -113,6 +115,7 @@
       entries = [...entries, ...batch]
       done = cursor.done
       console.debug('[page] loadBatch commit', { token, got: batch.length, total: entries.length, done })
+      probeSizes(batch, token)
     } catch (err) {
       if (token !== cursorToken) return
       listError = err instanceof Error ? err.message : String(err)
@@ -120,6 +123,24 @@
       console.debug('[page] loadBatch error', err)
     } finally {
       if (token === cursorToken) loadingBatch = false
+    }
+  }
+
+  function probeSizes(batch: DirEntry[], token: number) {
+    const s = session
+    if (!s) return
+    for (const entry of batch) {
+      if (entry.isFolder) continue
+      const ref = entry.reference
+      if (!ref || ref in sizes) continue
+      s.probeSize(ref)
+        .then((n) => {
+          if (token !== cursorToken) return
+          sizes = { ...sizes, [ref]: n }
+        })
+        .catch(() => {
+          // Leave the row's size blank on failure; column stays empty.
+        })
     }
   }
 
@@ -337,7 +358,9 @@
                     {entry.isFolder ? 'folder' : (entry.contentType ?? '—')}
                   </td>
                   <td class="py-2 pr-4 font-mono text-xs text-muted-foreground">
-                    {entry.isFolder ? '' : formatBytes(entry.size)}
+                    {entry.isFolder
+                      ? ''
+                      : formatBytes(sizes[entry.reference ?? ''] ?? entry.size)}
                   </td>
                   <td class="py-2 pr-0 font-mono text-xs text-muted-foreground">
                     {entry.reference ? shortHash(entry.reference) : ''}

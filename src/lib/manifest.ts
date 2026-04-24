@@ -67,6 +67,12 @@ export interface ManifestSession {
   readonly feed: FeedInfo | null
   openListing(path: string): EntriesCursor
   fileUrl(fullPath: string): string
+  /**
+   * Returns the byte length of the content referenced by the given 64-char hex
+   * Swarm reference. Resolved via a HEAD on `/bytes/{reference}` — cheap, but
+   * one network round-trip per call unless cached. Cached per-session.
+   */
+  probeSize(reference: string): Promise<number>
 }
 
 interface SessionState extends ManifestSession {
@@ -108,6 +114,7 @@ async function createSession(
   console.debug('[manifest] open', { beeUrl, inputRef, feedIndex: feedIndex?.toString() })
   const bee = new Bee(beeUrl)
   const cache = new Map<string, Promise<MantarayNode>>()
+  const sizeCache = new Map<string, Promise<number>>()
   const initial = await MantarayNode.unmarshal(bee, inputRef, undefined, chunkRequestOptions())
   const detected = detectFeed(initial)
 
@@ -136,6 +143,19 @@ async function createSession(
     },
     fileUrl(fullPath: string) {
       return buildFileUrl(beeUrl, rootRef, fullPath)
+    },
+    probeSize(reference: string) {
+      const key = reference.toLowerCase()
+      const hit = sizeCache.get(key)
+      if (hit) return hit
+      const pending = bee
+        .probeData(key, chunkRequestOptions())
+        .then((info) => info.contentLength)
+      sizeCache.set(key, pending)
+      pending.catch(() => {
+        if (sizeCache.get(key) === pending) sizeCache.delete(key)
+      })
+      return pending
     },
   }
   return state
