@@ -3,7 +3,7 @@ import { browser } from '$app/environment'
 const KEY_BEE = 'snaha.manifest-explorer.beeUrl'
 const KEY_LAST_REF = 'snaha.manifest-explorer.lastRef'
 
-const DEFAULT_BEE = 'http://localhost:1633'
+export const DEFAULT_BEE = 'https://api.gateway.ethswarm.org'
 const HEX64 = /^[0-9a-f]{64}$/
 
 function load(key: string, fallback: string): string {

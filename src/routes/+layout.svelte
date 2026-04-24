@@ -3,7 +3,7 @@
   import { Badge } from '$lib/components/ui/badge'
   import { Input } from '$lib/components/ui/input'
   import { Label } from '$lib/components/ui/label'
-  import { setBeeUrl, settings } from '$lib/settings.svelte'
+  import { DEFAULT_BEE, setBeeUrl, settings } from '$lib/settings.svelte'
   import FolderTreeIcon from '@lucide/svelte/icons/folder-tree'
 
   let { children } = $props()
@@ -37,7 +37,7 @@
           class="max-w-xs font-mono text-xs"
           bind:value={beeInput}
           onblur={onBeeBlur}
-          placeholder="http://localhost:1633"
+          placeholder={DEFAULT_BEE}
           spellcheck="false"
         />
       </div>
