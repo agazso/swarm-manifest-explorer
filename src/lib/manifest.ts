@@ -186,16 +186,24 @@ async function resolveFeed(
   inputRef: string,
 ): Promise<{ feed: FeedInfo; root: MantarayNode; rootRef: string; inline: boolean }> {
   const reader = bee.makeFeedReader(new Topic(info.topic), new EthAddress(info.owner))
-  const opts = feedIndex === undefined ? undefined : { index: FeedIndex.fromBigInt(feedIndex) }
+  // hasTimestamp: false returns the raw SOC payload. bee-js's default (true)
+  // strips 8 bytes assuming a timestamp prefix, which corrupts inline-payload
+  // feeds where the whole SOC payload is the Mantaray chunk. We detect the
+  // classic-reference shape (32/64 bytes plain, 40/72 with timestamp) here.
+  const opts =
+    feedIndex === undefined
+      ? undefined
+      : { index: FeedIndex.fromBigInt(feedIndex), hasTimestamp: false }
   const result = await reader.download(opts)
   const raw = result.payload.toUint8Array()
+  const refBytes = extractReferenceBytes(raw)
 
   let root: MantarayNode
   let rootRef: string
   let inline: boolean
 
-  if (raw.length === 32 || raw.length === 64) {
-    rootRef = bytesToHex(raw)
+  if (refBytes) {
+    rootRef = bytesToHex(refBytes)
     root = await MantarayNode.unmarshal(bee, rootRef, undefined, chunkRequestOptions())
     inline = false
   } else {
@@ -398,6 +406,16 @@ function bytesToHex(bytes: Uint8Array): string {
   let out = ''
   for (const b of bytes) out += b.toString(16).padStart(2, '0')
   return out
+}
+
+// Classic feed updates store either a plain reference (32 or 64 bytes) or
+// a timestamp-prefixed reference (40 or 72 bytes) in the SOC payload.
+// Returns the reference bytes if the raw payload matches one of those shapes,
+// or null for inline-payload feeds (where the whole payload is the data).
+function extractReferenceBytes(raw: Uint8Array): Uint8Array | null {
+  if (raw.length === 32 || raw.length === 64) return raw
+  if (raw.length === 40 || raw.length === 72) return raw.slice(8)
+  return null
 }
 
 function hexToBytes(hex: string): Uint8Array {
