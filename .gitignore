@@ -1,0 +1,12 @@
+.DS_Store
+.claude/settings.local.json
+node_modules/
+dist/
+/data/
+build/
+.svelte-kit/
+.vite/
+*.log
+.env
+.env.*
+!.env.example
