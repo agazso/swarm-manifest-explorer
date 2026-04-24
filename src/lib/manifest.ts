@@ -120,13 +120,19 @@ async function createSession(
 
   let root = initial
   let rootRef = inputRef
+  let urlRef = inputRef
   let feed: FeedInfo | null = null
 
   if (detected) {
     console.debug('[manifest] feed detected', detected)
-    feed = await resolveFeed(bee, detected, feedIndex)
-    rootRef = feed.resolvedRef
-    root = await MantarayNode.unmarshal(bee, rootRef, undefined, chunkRequestOptions())
+    const resolved = await resolveFeed(bee, detected, feedIndex, inputRef)
+    feed = resolved.feed
+    root = resolved.root
+    rootRef = resolved.rootRef
+    // Inline-payload feeds store the root Mantaray chunk as the SOC payload,
+    // so rootRef isn't retrievable at /bzz/. The original feed manifest ref
+    // is — Bee resolves it transparently — so use it for file URLs.
+    urlRef = resolved.inline ? inputRef : rootRef
   }
   cache.set(rootRef, Promise.resolve(root))
 
@@ -142,7 +148,7 @@ async function createSession(
       return createCursor(state, path)
     },
     fileUrl(fullPath: string) {
-      return buildFileUrl(beeUrl, rootRef, fullPath)
+      return buildFileUrl(beeUrl, urlRef, fullPath)
     },
     probeSize(reference: string) {
       const key = reference.toLowerCase()
@@ -177,17 +183,42 @@ async function resolveFeed(
   bee: Bee,
   info: { owner: string; topic: string; type: FeedType },
   feedIndex: bigint | undefined,
-): Promise<FeedInfo> {
+  inputRef: string,
+): Promise<{ feed: FeedInfo; root: MantarayNode; rootRef: string; inline: boolean }> {
   const reader = bee.makeFeedReader(new Topic(info.topic), new EthAddress(info.owner))
   const opts = feedIndex === undefined ? undefined : { index: FeedIndex.fromBigInt(feedIndex) }
-  const result = await reader.downloadReference(opts)
+  const result = await reader.download(opts)
+  const raw = result.payload.toUint8Array()
+
+  let root: MantarayNode
+  let rootRef: string
+  let inline: boolean
+
+  if (raw.length === 32 || raw.length === 64) {
+    rootRef = bytesToHex(raw)
+    root = await MantarayNode.unmarshal(bee, rootRef, undefined, chunkRequestOptions())
+    inline = false
+  } else {
+    // Inline-payload feed: the SOC payload is the root Mantaray chunk itself,
+    // not a reference to one. Parse directly from bytes.
+    const selfAddress = hexToBytes(inputRef)
+    root = MantarayNode.unmarshalFromData(raw, selfAddress)
+    rootRef = inputRef
+    inline = true
+  }
+
   return {
-    owner: info.owner,
-    topic: info.topic,
-    type: info.type,
-    currentIndex: result.feedIndex.toBigInt(),
-    nextIndex: result.feedIndexNext?.toBigInt(),
-    resolvedRef: result.reference.toHex(),
+    feed: {
+      owner: info.owner,
+      topic: info.topic,
+      type: info.type,
+      currentIndex: result.feedIndex.toBigInt(),
+      nextIndex: result.feedIndexNext?.toBigInt(),
+      resolvedRef: rootRef,
+    },
+    root,
+    rootRef,
+    inline,
   }
 }
 
@@ -344,13 +375,13 @@ function isFileLeaf(node: MantarayNode): boolean {
   return false
 }
 
-function buildFileUrl(beeUrl: string, rootRef: string, fullPath: string): string {
+function buildFileUrl(beeUrl: string, urlRef: string, fullPath: string): string {
   const base = beeUrl.replace(/\/+$/, '')
   const encoded = fullPath
     .split('/')
     .map((seg) => encodeURIComponent(seg))
     .join('/')
-  return `${base}/bzz/${rootRef}/${encoded}`
+  return `${base}/bzz/${urlRef}/${encoded}`
 }
 
 export function parentPath(path: string): string {
@@ -366,6 +397,15 @@ function normHex(s: string): string {
 function bytesToHex(bytes: Uint8Array): string {
   let out = ''
   for (const b of bytes) out += b.toString(16).padStart(2, '0')
+  return out
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const clean = hex.replace(/^0x/, '')
+  const out = new Uint8Array(clean.length / 2)
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16)
+  }
   return out
 }
 
