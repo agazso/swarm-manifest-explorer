@@ -14,7 +14,20 @@
 // the resolved reference becomes the effective root and a FeedInfo is
 // exposed so the UI can offer sequential prev/next navigation.
 
-import { Bee, EthAddress, FeedIndex, MantarayNode, Topic } from '@ethersphere/bee-js'
+import {
+  Bee,
+  EthAddress,
+  FeedIndex,
+  MantarayNode,
+  Topic,
+  type BeeRequestOptions,
+} from '@ethersphere/bee-js'
+
+const CHUNK_TIMEOUT_MS = 20_000
+
+function chunkRequestOptions(): BeeRequestOptions {
+  return { timeout: CHUNK_TIMEOUT_MS }
+}
 
 export interface DirEntry {
   name: string
@@ -92,9 +105,10 @@ async function createSession(
   inputRef: string,
   feedIndex: bigint | undefined,
 ): Promise<SessionState> {
+  console.debug('[manifest] open', { beeUrl, inputRef, feedIndex: feedIndex?.toString() })
   const bee = new Bee(beeUrl)
   const cache = new Map<string, Promise<MantarayNode>>()
-  const initial = await MantarayNode.unmarshal(bee, inputRef)
+  const initial = await MantarayNode.unmarshal(bee, inputRef, undefined, chunkRequestOptions())
   const detected = detectFeed(initial)
 
   let root = initial
@@ -102,9 +116,10 @@ async function createSession(
   let feed: FeedInfo | null = null
 
   if (detected) {
+    console.debug('[manifest] feed detected', detected)
     feed = await resolveFeed(bee, detected, feedIndex)
     rootRef = feed.resolvedRef
-    root = await MantarayNode.unmarshal(bee, rootRef)
+    root = await MantarayNode.unmarshal(bee, rootRef, undefined, chunkRequestOptions())
   }
   cache.set(rootRef, Promise.resolve(root))
 
@@ -187,6 +202,10 @@ function createCursor(state: SessionState, prefix: string): EntriesCursor {
   return cursor
 }
 
+function stripLead(s: string): string {
+  return s.replace(/^\/+/, '')
+}
+
 async function* walkEntries(
   state: SessionState,
   prefix: string,
@@ -195,6 +214,7 @@ async function* walkEntries(
   const normPrefix = prefix.replace(/^\/+|\/+$/g, '')
   const dPrefix = normPrefix ? `${normPrefix}/` : ''
   const seenFolders = new Set<string>()
+  console.debug('[manifest] walk start', { prefix, dPrefix })
 
   async function* walk(node: MantarayNode, pathSoFar: string): AsyncGenerator<DirEntry> {
     // Kick off concurrent prefetches for any fork that will require its
@@ -202,51 +222,61 @@ async function* walkEntries(
     // populate the cache; the sequential walk below will get cache hits.
     for (const [, fork] of node.forks) {
       const forkStr = decoder.decode(fork.prefix)
-      const combined = pathSoFar + forkStr
-      if (!wouldNeedChildChunk(combined, dPrefix)) continue
+      const logical = stripLead(pathSoFar + forkStr)
+      if (!wouldNeedChildChunk(logical, dPrefix)) continue
       void ensureLoaded(bee, fork.node, cache)
     }
 
     for (const [, fork] of node.forks) {
       const forkStr = decoder.decode(fork.prefix)
       const combined = pathSoFar + forkStr
+      const logical = stripLead(combined)
 
-      if (dPrefix !== '' && combined.length < dPrefix.length) {
-        if (!dPrefix.startsWith(combined)) continue
+      // Still navigating down toward the target folder — the accumulated
+      // logical path is shorter than dPrefix and a prefix of it.
+      if (dPrefix !== '' && logical.length < dPrefix.length) {
+        if (!dPrefix.startsWith(logical)) continue
         const child = await ensureLoaded(bee, fork.node, cache)
         yield* walk(child, combined)
         continue
       }
 
-      if (dPrefix !== '' && !combined.startsWith(dPrefix)) continue
+      // Completely outside the target subtree — skip the whole branch.
+      if (dPrefix !== '' && !logical.startsWith(dPrefix)) continue
 
-      const rel = combined.slice(dPrefix.length)
+      const rel = logical.slice(dPrefix.length)
       const slashIdx = rel.indexOf('/')
       if (slashIdx !== -1) {
         const folderName = rel.slice(0, slashIdx)
-        if (!seenFolders.has(folderName)) {
+        if (folderName !== '' && !seenFolders.has(folderName)) {
           seenFolders.add(folderName)
-          yield {
+          const entry: DirEntry = {
             name: folderName,
             isFolder: true,
             fullPath: `${dPrefix}${folderName}`,
           }
+          console.debug('[manifest] yield folder', entry.fullPath)
+          yield entry
         }
         continue
       }
 
+      // rel === '' means this fork lands exactly on the subtree root — no
+      // entry to emit, but descend into its children to surface them.
       const inlineMetadata = fork.node.metadata ?? undefined
       const child = await ensureLoaded(bee, fork.node, cache)
       if (rel !== '' && isFileLeaf(child)) {
         const md = inlineMetadata ?? child.metadata ?? undefined
-        yield {
+        const entry: DirEntry = {
           name: rel,
           isFolder: false,
-          fullPath: combined,
+          fullPath: `${dPrefix}${rel}`,
           reference: bytesToHex(child.targetAddress),
           contentType: md?.['Content-Type'],
           size: parseSize(md?.['Content-Length']),
         }
+        console.debug('[manifest] yield file', entry.fullPath)
+        yield entry
       }
       if (child.forks.size > 0) {
         yield* walk(child, combined)
@@ -255,13 +285,14 @@ async function* walkEntries(
   }
 
   yield* walk(root, '')
+  console.debug('[manifest] walk done', { prefix })
 }
 
-function wouldNeedChildChunk(combined: string, dPrefix: string): boolean {
-  if (dPrefix === '') return !combined.includes('/')
-  if (combined.length < dPrefix.length) return dPrefix.startsWith(combined)
-  if (!combined.startsWith(dPrefix)) return false
-  return !combined.slice(dPrefix.length).includes('/')
+function wouldNeedChildChunk(logical: string, dPrefix: string): boolean {
+  if (dPrefix === '') return !logical.includes('/')
+  if (logical.length < dPrefix.length) return dPrefix.startsWith(logical)
+  if (!logical.startsWith(dPrefix)) return false
+  return !logical.slice(dPrefix.length).includes('/')
 }
 
 function ensureLoaded(
@@ -274,7 +305,8 @@ function ensureLoaded(
   const key = bytesToHex(node.selfAddress)
   const cached = cache.get(key)
   if (cached) return cached
-  const pending = MantarayNode.unmarshal(bee, node.selfAddress)
+  console.debug('[manifest] fetch', key)
+  const pending = MantarayNode.unmarshal(bee, node.selfAddress, undefined, chunkRequestOptions())
   cache.set(key, pending)
   // Self-heal the cache if the fetch fails so a later retry gets a fresh attempt;
   // the attached no-op handler also prevents unhandled-rejection noise when a

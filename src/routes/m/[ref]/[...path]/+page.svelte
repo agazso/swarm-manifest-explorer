@@ -19,7 +19,7 @@
   import FolderIcon from '@lucide/svelte/icons/folder'
   import HomeIcon from '@lucide/svelte/icons/home'
   import RadioTowerIcon from '@lucide/svelte/icons/radio-tower'
-  import { onMount } from 'svelte'
+  import { onMount, untrack } from 'svelte'
 
   const PAGE_SIZE = 200
 
@@ -48,7 +48,7 @@
   let listError = $state('')
 
   let sentinel: HTMLDivElement | undefined = $state()
-  let observer: IntersectionObserver | null = null
+  let observer = $state<IntersectionObserver | null>(null)
 
   $effect(() => {
     const currentRef = ref
@@ -74,31 +74,50 @@
   })
 
   $effect(() => {
+    // Tracked dependencies — the only two things that should re-run this effect.
     const s = session
     const p = path
     if (!s) return
-    cursorToken++
-    const token = cursorToken
-    cursor = s.openListing(p)
-    options = cursor.options
-    entries = []
-    done = false
-    listError = ''
-    loadBatch(token)
+    // All the setup below mutates / reads $state via loadBatch. Without
+    // untrack, Svelte would treat those reads as additional effect deps
+    // and loadBatch's write to loadingBatch would retrigger this effect
+    // infinitely (effect_update_depth_exceeded).
+    untrack(() => {
+      cursorToken++
+      const token = cursorToken
+      cursor = s.openListing(p)
+      options = cursor.options
+      entries = []
+      done = false
+      listError = ''
+      loadingBatch = false
+      console.debug('[page] new cursor', { path: p, token })
+      loadBatch(token)
+    })
   })
 
   async function loadBatch(token: number) {
-    if (!cursor || loadingBatch || done) return
+    if (token !== cursorToken) return
+    if (!cursor || loadingBatch || done) {
+      console.debug('[page] loadBatch skip', { token, hasCursor: !!cursor, loadingBatch, done })
+      return
+    }
     loadingBatch = true
+    console.debug('[page] loadBatch start', { token })
     try {
       const batch = await cursor.next(PAGE_SIZE)
-      if (token !== cursorToken) return
-      entries = entries.concat(batch)
+      if (token !== cursorToken) {
+        console.debug('[page] loadBatch stale', { token, current: cursorToken })
+        return
+      }
+      entries = [...entries, ...batch]
       done = cursor.done
+      console.debug('[page] loadBatch commit', { token, got: batch.length, total: entries.length, done })
     } catch (err) {
       if (token !== cursorToken) return
       listError = err instanceof Error ? err.message : String(err)
       done = true
+      console.debug('[page] loadBatch error', err)
     } finally {
       if (token === cursorToken) loadingBatch = false
     }
