@@ -19,6 +19,7 @@ import {
   EthAddress,
   FeedIndex,
   MantarayNode,
+  MerkleTree,
   Topic,
   type BeeRequestOptions,
 } from '@ethersphere/bee-js'
@@ -207,11 +208,15 @@ async function resolveFeed(
     root = await MantarayNode.unmarshal(bee, rootRef, undefined, chunkRequestOptions())
     inline = false
   } else {
-    // Inline-payload feed: the SOC payload is the root Mantaray chunk itself,
-    // not a reference to one. Parse directly from bytes.
-    const selfAddress = hexToBytes(inputRef)
-    root = MantarayNode.unmarshalFromData(raw, selfAddress)
-    rootRef = inputRef
+    // Inline-payload feed: the SOC payload IS the Mantaray chunk payload, with
+    // no separate /bytes/ entry referenced by hash. Bee doesn't return the
+    // chunk's address in any header, so derive it from the bytes — BMT-hash
+    // them. (MantarayNode.calculateSelfAddress is no help here: it short-
+    // circuits when selfAddress is already set, which unmarshalFromData does.)
+    const chunk = await MerkleTree.root(raw)
+    const computedSelfAddress = chunk.hash()
+    rootRef = bytesToHex(computedSelfAddress)
+    root = MantarayNode.unmarshalFromData(raw, computedSelfAddress)
     inline = true
   }
 
