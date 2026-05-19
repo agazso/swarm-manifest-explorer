@@ -12,7 +12,7 @@
     type ListingOptions,
     type ManifestSession,
   } from '$lib/manifest'
-  import { isHex64, settings, shortRef } from '$lib/settings.svelte'
+  import { isEnsName, isValidManifestInput, settings, shortRef } from '$lib/settings.svelte'
   import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left'
   import ChevronRightIcon from '@lucide/svelte/icons/chevron-right'
   import FileIcon from '@lucide/svelte/icons/file'
@@ -55,7 +55,7 @@
     const currentRef = ref
     const currentBee = settings.beeUrl
     const idx = feedIndex
-    if (!isHex64(currentRef)) {
+    if (!isValidManifestInput(currentRef)) {
       sessionError = 'Invalid manifest reference.'
       session = null
       return
@@ -211,7 +211,9 @@
 
 <main class="mx-auto max-w-6xl px-5 py-6">
   <div class="mb-4 flex flex-wrap items-center gap-2 text-xs">
-    <Badge variant="outline" class="font-mono">ref · {shortRef(ref)}</Badge>
+    <Badge variant="outline" class="font-mono">
+      {isEnsName(ref) ? 'ens' : 'ref'} · {shortRef(ref)}
+    </Badge>
     {#if session && session.rootRef !== ref}
       <Badge variant="secondary" class="font-mono">
         resolved · {shortRef(session.rootRef)}

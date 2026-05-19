@@ -23,6 +23,7 @@ import {
   Topic,
   type BeeRequestOptions,
 } from '@ethersphere/bee-js'
+import { isEnsName } from '$lib/settings.svelte'
 
 const CHUNK_TIMEOUT_MS = 20_000
 
@@ -116,24 +117,43 @@ async function createSession(
   const bee = new Bee(beeUrl)
   const cache = new Map<string, Promise<MantarayNode>>()
   const sizeCache = new Map<string, Promise<number>>()
-  const initial = await MantarayNode.unmarshal(bee, inputRef, undefined, chunkRequestOptions())
+
+  let initial: MantarayNode
+  let initialRef: string
+  if (isEnsName(inputRef)) {
+    // ENS path: Bee resolves the name server-side via /bytes/{name}, but bee-js's
+    // MantarayNode.unmarshal demands a 32-byte Reference, so we use downloadData
+    // (which accepts ENS) and parse the returned root chunk manually. BMT-hash
+    // the bytes locally to recover the resolved hex ref for the UI and caches.
+    const data = (
+      await bee.downloadData(inputRef, undefined, chunkRequestOptions())
+    ).toUint8Array()
+    const chunk = await MerkleTree.root(data)
+    const initialRefBytes = chunk.hash()
+    initialRef = bytesToHex(initialRefBytes)
+    initial = MantarayNode.unmarshalFromData(data, initialRefBytes)
+  } else {
+    initial = await MantarayNode.unmarshal(bee, inputRef, undefined, chunkRequestOptions())
+    initialRef = inputRef
+  }
   const detected = detectFeed(initial)
 
   let root = initial
-  let rootRef = inputRef
-  let urlRef = inputRef
+  let rootRef = initialRef
+  let urlRef = initialRef
   let feed: FeedInfo | null = null
 
   if (detected) {
     console.debug('[manifest] feed detected', detected)
-    const resolved = await resolveFeed(bee, detected, feedIndex, inputRef)
+    const resolved = await resolveFeed(bee, detected, feedIndex, initialRef)
     feed = resolved.feed
     root = resolved.root
     rootRef = resolved.rootRef
     // Inline-payload feeds store the root Mantaray chunk as the SOC payload,
-    // so rootRef isn't retrievable at /bzz/. The original feed manifest ref
-    // is — Bee resolves it transparently — so use it for file URLs.
-    urlRef = resolved.inline ? inputRef : rootRef
+    // so rootRef isn't retrievable at /bzz/. The feed manifest ref (here,
+    // initialRef — the resolved hex address) is — Bee dereferences it
+    // transparently — so use it for file URLs.
+    urlRef = resolved.inline ? initialRef : rootRef
   }
   cache.set(rootRef, Promise.resolve(root))
 

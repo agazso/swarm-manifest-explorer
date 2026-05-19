@@ -4,16 +4,23 @@
   import * as Card from '$lib/components/ui/card'
   import { Input } from '$lib/components/ui/input'
   import { Label } from '$lib/components/ui/label'
-  import { isHex64, normHex, setLastRef, settings } from '$lib/settings.svelte'
+  import {
+    isEnsName,
+    isValidManifestInput,
+    normHex,
+    setLastRef,
+    settings,
+  } from '$lib/settings.svelte'
 
   let refInput = $state(settings.lastRef)
   let error = $state('')
 
   function submit(e: SubmitEvent) {
     e.preventDefault()
-    const ref = normHex(refInput)
-    if (!isHex64(ref)) {
-      error = 'Enter a 64-character hex Swarm reference.'
+    const trimmed = refInput.trim()
+    const ref = isEnsName(trimmed) ? trimmed.toLowerCase() : normHex(trimmed)
+    if (!isValidManifestInput(ref)) {
+      error = 'Enter a 64-character hex Swarm reference or an ENS name (e.g. swarm.eth).'
       return
     }
     error = ''
@@ -39,7 +46,7 @@
             id="ref"
             type="text"
             bind:value={refInput}
-            placeholder="64-character hex"
+            placeholder="64-character hex or ENS name (e.g. swarm.eth)"
             spellcheck="false"
             autocomplete="off"
             class="font-mono"
